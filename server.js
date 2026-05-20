@@ -2,6 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fonepay = require('./fonepay-sdk');
+const fonepayWs = require('./fonepay-websocket');
 const QRCode = require('qrcode');
 
 const app = express();
@@ -22,6 +23,52 @@ const pendingTransactions = new Map();
 const orderTransactions = new Map();
 const websocketTransactions = new Map();
 const QR_SESSION_TTL_MS = 5 * 60 * 1000;
+
+function markTransactionPaid(tx, source) {
+  if (!tx || tx.status === 'paid') return;
+  tx.status = 'paid';
+  orderTransactions.delete(tx.safeOrderId);
+  if (tx.websocketId) {
+    fonepayWs.stopMonitoring(tx.websocketId);
+    websocketTransactions.delete(tx.websocketId);
+  }
+  console.log(`Payment confirmed (${source}):`, tx.referenceLabel, 'order', tx.orderId);
+}
+
+async function confirmPaymentWithApi(tx) {
+  try {
+    const result = await fonepay.checkPaymentStatus(null, {
+      terminalId: TERMINAL_ID,
+      referenceLabel: tx.referenceLabel,
+    });
+    const paid =
+      String(result.paymentStatus || result.status || '').toUpperCase() === 'SUCCESS' ||
+      result.success === true;
+    if (paid) {
+      markTransactionPaid(tx, 'api');
+    }
+    return paid;
+  } catch (err) {
+    console.error('Status check failed:', tx.referenceLabel, err.message);
+    return false;
+  }
+}
+
+function attachWebSocketMonitor(tx) {
+  if (!tx.websocketId) return;
+
+  fonepayWs.startMonitoring(tx.websocketId, {
+    onMessage: async (msg) => {
+      if (fonepayWs.isPaymentSuccess(msg)) {
+        markTransactionPaid(tx, 'websocket');
+        await confirmPaymentWithApi(tx);
+      }
+    },
+    onError: (err) => {
+      console.error('WebSocket monitor error:', tx.referenceLabel, err.message);
+    },
+  });
+}
 
 // ============================================================================
 // 1. INITIATE PAYMENT (Redirect from Shopify)
@@ -49,6 +96,7 @@ app.get('/checkout', async (req, res) => {
       const isActive = existingTx && existingTx.status === 'pending' && Date.now() < existingTx.expiresAt;
 
       if (isActive) {
+        attachWebSocketMonitor(existingTx);
         return res.render('payment', {
           orderId: order_id,
           amount: amount,
@@ -97,6 +145,9 @@ app.get('/checkout', async (req, res) => {
     if (qrData.websocketId) {
       websocketTransactions.set(qrData.websocketId, referenceLabel);
     }
+
+    const tx = pendingTransactions.get(referenceLabel);
+    attachWebSocketMonitor(tx);
 
     res.render('payment', {
       orderId: order_id,
@@ -149,11 +200,8 @@ app.post('/webhook/fonepay', async (req, res) => {
   const tx = txRef ? pendingTransactions.get(txRef) : null;
 
   if (tx && status === 'SUCCESS') {
-    tx.status = 'paid';
-    orderTransactions.delete(tx.safeOrderId);
-    if (tx.websocketId) {
-      websocketTransactions.delete(tx.websocketId);
-    }
+    markTransactionPaid(tx, 'webhook');
+    confirmPaymentWithApi(tx).catch(() => {});
   }
 
   res.send('OK');
