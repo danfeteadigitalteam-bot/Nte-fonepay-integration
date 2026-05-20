@@ -110,7 +110,8 @@
         </div>
 
         <p class="instructions">
-            Scan this QR code with your mobile banking app or eSewa/Khalti to complete your payment.
+            Scan this QR with your <strong>mobile banking app</strong> (Fonepay / interbank QR).<br>
+            <small>Keep this page open until payment completes. If QR is on another screen, scan from your phone’s banking app.</small>
         </p>
 
         <div class="status" id="payment-status">
@@ -120,7 +121,8 @@
 
     <script>
         const referenceLabel = '<%= referenceLabel %>';
-        
+        // WebSocket runs on server only (browser + server both connecting caused close 1006)
+
         // Poll for payment status every 3 seconds
         const pollInterval = setInterval(async () => {
             try {

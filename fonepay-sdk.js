@@ -169,26 +169,26 @@ async function generateQR(token, { amount, billId, referenceLabel, terminalId })
  
   // FIX 1: paymentMode must be "QR" not "INTENT" (docs p.15-16)
   // FIX 2: amount must be a Number, not a String (docs p.16: "amount": 100.00)
+  const amountNum = Math.round(Number(amount) * 100) / 100;
   const body = {
-    amount: Number(amount),                     // Decimal number, not string
+    amount: amountNum,
     billId: String(billId),
     terminalId: String(terminalId || CONFIG.TERMINAL_ID),
-    paymentMode: 'QR',                          // FIXED: was "INTENT", must be "QR"
+    paymentMode: 'QR',
     referenceLabel: String(referenceLabel),
     qrType: 'INTENT_QR',
   };
- 
-  // FIX 3: Sign the exact body string we send — field order must be consistent
+
   const bodyStr = JSON.stringify(body);
- 
+
   console.log('[Fonepay] Generating QR with body:', bodyStr);
- 
+
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': token,
-      'signature': sign(bodyStr),               // Sign the exact string being sent
+      'signature': sign(bodyStr),
     },
     body: bodyStr,
   });

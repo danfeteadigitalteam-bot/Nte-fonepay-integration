@@ -29,7 +29,7 @@ function markTransactionPaid(tx, source) {
   tx.status = 'paid';
   orderTransactions.delete(tx.safeOrderId);
   if (tx.websocketId) {
-    fonepayWs.stopMonitoring(tx.websocketId);
+    fonepayWs.stopMonitoring(tx.referenceLabel);
     websocketTransactions.delete(tx.websocketId);
   }
   console.log(`Payment confirmed (${source}):`, tx.referenceLabel, 'order', tx.orderId);
@@ -54,15 +54,19 @@ async function confirmPaymentWithApi(tx) {
   }
 }
 
-function attachWebSocketMonitor(tx) {
+async function attachWebSocketMonitor(tx) {
   if (!tx.websocketId) return;
 
+  const token = await fonepay.getToken();
   fonepayWs.startMonitoring(tx.websocketId, {
-    onMessage: async (msg) => {
-      if (fonepayWs.isPaymentSuccess(msg)) {
-        markTransactionPaid(tx, 'websocket');
-        await confirmPaymentWithApi(tx);
-      }
+    sessionKey: tx.referenceLabel,
+    authToken: token,
+    onQrVerified: (msg) => {
+      console.log('QR verified (scan OK):', tx.referenceLabel, fonepayWs.parseTransactionStatus(msg));
+    },
+    onPaymentSuccess: async () => {
+      markTransactionPaid(tx, 'websocket');
+      await confirmPaymentWithApi(tx);
     },
     onError: (err) => {
       console.error('WebSocket monitor error:', tx.referenceLabel, err.message);
@@ -96,12 +100,13 @@ app.get('/checkout', async (req, res) => {
       const isActive = existingTx && existingTx.status === 'pending' && Date.now() < existingTx.expiresAt;
 
       if (isActive) {
-        attachWebSocketMonitor(existingTx);
+        await attachWebSocketMonitor(existingTx);
         return res.render('payment', {
           orderId: order_id,
           amount: amount,
           qrImage: existingTx.qrImage,
-          referenceLabel: existingReferenceLabel
+          referenceLabel: existingReferenceLabel,
+          websocketUrl: existingTx.websocketId || '',
         });
       }
 
@@ -128,12 +133,17 @@ app.get('/checkout', async (req, res) => {
     if (!qrPayload) {
       throw new Error('QR payload missing in Fonepay response');
     }
-    const qrImageBase64 = await QRCode.toDataURL(qrPayload);
+    const qrImageBase64 = await QRCode.toDataURL(qrPayload, {
+      errorCorrectionLevel: 'L',
+      margin: 2,
+      width: 280,
+    });
 
     pendingTransactions.set(referenceLabel, {
       orderId: order_id,
       safeOrderId,
       referenceLabel,
+      prn: qrData.prn || referenceLabel,
       websocketId: qrData.websocketId,
       amount: amount,
       redirectUrl: redirect_url,
@@ -147,13 +157,14 @@ app.get('/checkout', async (req, res) => {
     }
 
     const tx = pendingTransactions.get(referenceLabel);
-    attachWebSocketMonitor(tx);
+    await attachWebSocketMonitor(tx);
 
     res.render('payment', {
       orderId: order_id,
       amount: amount,
       qrImage: qrImageBase64,
-      referenceLabel
+      referenceLabel,
+      websocketUrl: qrData.websocketId || '',
     });
 
   } catch (error) {
@@ -189,6 +200,24 @@ app.get('/api/status/:referenceLabel', (req, res) => {
   res.json({ status: tx.status, redirectUrl: tx.redirectUrl });
 });
 
+// Called when browser WebSocket sees activity (backup to server-side WS)
+app.post('/api/notify/:referenceLabel', async (req, res) => {
+  const tx = pendingTransactions.get(req.params.referenceLabel);
+  if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+
+  const event = req.body?.event || 'unknown';
+  console.log('Browser notify:', tx.referenceLabel, event);
+
+  if (event === 'payment_success' || event === 'qr_verified') {
+    if (event === 'payment_success') {
+      markTransactionPaid(tx, 'browser-ws');
+      await confirmPaymentWithApi(tx);
+    }
+  }
+
+  res.json({ status: tx.status });
+});
+
 // ============================================================================
 // 3. FONEPAY WEBHOOK
 // ============================================================================
@@ -210,8 +239,10 @@ app.post('/webhook/fonepay', async (req, res) => {
 app.get('/health', (req, res) => {
   res.json({
     ok: true,
+    version: '1.2.0-ws-qr',
     terminalConfigured: Boolean(TERMINAL_ID),
-    terminalSuffix: TERMINAL_ID ? TERMINAL_ID.slice(-4) : null
+    terminalSuffix: TERMINAL_ID ? TERMINAL_ID.slice(-4) : null,
+    activeWebSockets: fonepayWs.getActiveCount(),
   });
 });
 
