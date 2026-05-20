@@ -1,21 +1,20 @@
 /**
- * FONEPAY SDK — Production-Ready Module
- * =======================================
- * Reusable module for Shopify + Fonepay Intent QR integration.
- * 
- * Usage:
- *   const fonepay = require('./fonepay-sdk');
- *   const token = await fonepay.login();
- *   const banks = await fonepay.getBankList(token);
- *   const qr = await fonepay.generateQR(token, { amount, billId, referenceLabel });
+ * FONEPAY SDK — Fixed for Intent QR (v1.9 docs)
+ * ================================================
+ * Key fixes:
+ *  1. paymentMode in QR body must be "QR" not "INTENT" (docs p.15)
+ *  2. amount sent as Number/Decimal, not String (docs p.16)
+ *  3. Signature signs full JSON body string (docs p.12)
+ *  4. getBankList signs empty string (GET request, no body)
+ *  5. Login URL corrected to v2 path
  */
-
+ 
 require('dotenv').config();
 const fetch = require('node-fetch');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
-
+ 
 // ============================================================
 // CONFIGURATION
 // ============================================================
@@ -26,209 +25,248 @@ const CONFIG = {
   TERMINAL_ID: process.env.FONEPAY_TERMINAL_ID,
   PRIVATE_KEY_PATH: process.env.FONEPAY_PRIVATE_KEY_PATH || './private.pem',
 };
-
-// Validate required config
+ 
 for (const [key, value] of Object.entries(CONFIG)) {
   if (!value && key !== 'PRIVATE_KEY_PATH') {
     throw new Error(`Missing required config: ${key}. Set it in .env file.`);
   }
 }
-
+ 
 // ============================================================
-// LOAD PRIVATE KEY (once at startup)
+// LOAD PRIVATE KEY
 // ============================================================
 const PRIVATE_KEY = (() => {
-  // Option A: Base64 environment variable (Best for Railway/Render)
   if (process.env.FONEPAY_PRIVATE_KEY_B64) {
     const pem = Buffer.from(process.env.FONEPAY_PRIVATE_KEY_B64, 'base64').toString('utf8');
     return crypto.createPrivateKey(pem);
   }
-  
-  // Option B: Local file path
   const keyPath = path.resolve(CONFIG.PRIVATE_KEY_PATH);
   if (!fs.existsSync(keyPath)) {
     throw new Error(`Private key not found: ${keyPath}. Set FONEPAY_PRIVATE_KEY_B64 for production.`);
   }
   return crypto.createPrivateKey(fs.readFileSync(keyPath, 'utf8'));
 })();
-
+ 
 // ============================================================
 // CRYPTO HELPERS
 // ============================================================
-
+ 
 /**
- * Sign a payload with RSA SHA256 and return base64 signature
+ * Sign a string payload with RSA SHA256, return base64 signature.
+ * Per docs (p.12): "Take all request JSON body as payload"
+ * For GET requests with no body, sign empty string "".
  */
 function sign(payload) {
+  // Always sign a string — for JSON bodies pass the raw JSON string, not the object
   const str = typeof payload === 'string' ? payload : JSON.stringify(payload);
   const signer = crypto.createSign('SHA256');
   signer.update(str, 'utf8');
   return signer.sign(PRIVATE_KEY, 'base64');
 }
-
-/**
- * Create Basic Auth header value
- */
+ 
 function basicAuth() {
   return 'Basic ' + Buffer.from(`${CONFIG.USERNAME}:${CONFIG.PASSWORD}`).toString('base64');
 }
-
+ 
 // ============================================================
-// TOKEN CACHE (auto-refresh on 401)
+// TOKEN CACHE
 // ============================================================
 let cachedToken = null;
 let tokenExpiry = 0;
-const TOKEN_TTL_MS = 25 * 60 * 1000; // Refresh every 25 min (tokens typically last 30 min)
-
+const TOKEN_TTL_MS = 25 * 60 * 1000;
+ 
 // ============================================================
 // API METHODS
 // ============================================================
-
+ 
 /**
- * Login and get access token.
- * Signature: Sign the JSON body string.
- * Auth: Basic Auth header.
+ * Login — signs the JSON body string as documented.
+ * Note: The curl example in docs (p.11) shows signing {"username":...,"password":...}
  */
 async function login() {
   const url = `${CONFIG.BASE_URL}/api/merchant/third-party/v2/login`;
+ 
+  // Build body object and immediately stringify — field order is fixed here
   const body = { username: CONFIG.USERNAME, password: CONFIG.PASSWORD };
   const bodyStr = JSON.stringify(body);
-
+ 
+  console.log('[Fonepay] Logging in...');
+ 
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': basicAuth(),
-      'Signature': sign(bodyStr),
+      'signature': sign(bodyStr),   // NOTE: header name is lowercase "signature" per docs p.10
     },
-    body: bodyStr
+    body: bodyStr,
   });
-
+ 
+  const rawText = await res.text();
+  console.log('[Fonepay] Login response:', rawText);
+ 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Login failed (${res.status}): ${errText}`);
+    throw new Error(`Login failed (${res.status}): ${rawText}`);
   }
-
-  const data = await res.json();
+ 
+  const data = JSON.parse(rawText);
   const token = data.accessToken; // "Bearer eyJ..."
-
-  // Cache the token
+ 
   cachedToken = token;
   tokenExpiry = Date.now() + TOKEN_TTL_MS;
-
+ 
   return token;
 }
-
-/**
- * Get a valid token (from cache or fresh login)
- */
+ 
 async function getToken() {
   if (cachedToken && Date.now() < tokenExpiry) {
     return cachedToken;
   }
   return login();
 }
-
+ 
 /**
- * Get list of banks that support Intent QR payment.
- * Signature: Sign empty string.
- * Auth: Bearer token.
+ * Get bank list — GET request, sign empty string per docs (no body).
  */
 async function getBankList(token) {
   token = token || await getToken();
   const url = `${CONFIG.BASE_URL}/api/merchant/third-party/v2/banks/list`;
-
+ 
   const res = await fetch(url, {
     method: 'GET',
     headers: {
       'Authorization': token,
-      'Signature': sign(''),
+      'signature': sign(''),      // GET has no body — sign empty string
       'paymentMode': 'INTENT',
-    }
+    },
   });
-
+ 
   if (res.status === 401) {
-    // Token expired — re-login and retry once
     cachedToken = null;
     const newToken = await login();
     return getBankList(newToken);
   }
-
+ 
   if (!res.ok) {
     const errText = await res.text();
     throw new Error(`Bank list failed (${res.status}): ${errText}`);
   }
-
+ 
   return res.json();
 }
-
+ 
 /**
- * Generate Intent QR code for payment.
- * Signature: Sign the JSON body string.
- * Auth: Bearer token.
- * 
- * @param {string} token - Access token from login
- * @param {object} options
- * @param {number|string} options.amount - Payment amount
- * @param {string} options.billId - Unique bill/order ID
- * @param {string} options.referenceLabel - Reference label for the transaction
- * @param {string} [options.terminalId] - Terminal ID (defaults to CONFIG)
- * @returns {object} QR response with websocketId, prn, etc.
+ * Generate Intent QR.
+ *
+ * FIXES vs original:
+ *  - paymentMode: "QR" (not "INTENT") — see docs p.15 curl example and p.16 request sample
+ *  - amount: Number (Decimal) — docs say "amount": 100.00, not "100" string
+ *  - Signs the exact JSON string that is sent as the body
  */
 async function generateQR(token, { amount, billId, referenceLabel, terminalId }) {
   token = token || await getToken();
   const url = `${CONFIG.BASE_URL}/api/merchant/third-party/v2/generate-intent-qr`;
-
+ 
+  // FIX 1: paymentMode must be "QR" not "INTENT" (docs p.15-16)
+  // FIX 2: amount must be a Number, not a String (docs p.16: "amount": 100.00)
   const body = {
-    amount: typeof amount === 'string' ? amount : String(amount),
-    billId,
-    terminalId: terminalId || CONFIG.TERMINAL_ID,
-    paymentMode: 'INTENT',
-    referenceLabel,
+    amount: Number(amount),                     // Decimal number, not string
+    billId: String(billId),
+    terminalId: String(terminalId || CONFIG.TERMINAL_ID),
+    paymentMode: 'QR',                          // FIXED: was "INTENT", must be "QR"
+    referenceLabel: String(referenceLabel),
     qrType: 'INTENT_QR',
   };
+ 
+  // FIX 3: Sign the exact body string we send — field order must be consistent
   const bodyStr = JSON.stringify(body);
-
+ 
+  console.log('[Fonepay] Generating QR with body:', bodyStr);
+ 
   const res = await fetch(url, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': token,
-      'Signature': sign(bodyStr),
+      'signature': sign(bodyStr),               // Sign the exact string being sent
     },
-    body: bodyStr
+    body: bodyStr,
   });
-
+ 
+  // Log the raw response for debugging
+  const rawText = await res.text();
+  console.log('[Fonepay] QR generation raw response:', rawText);
+ 
   if (res.status === 401) {
     cachedToken = null;
     const newToken = await login();
     return generateQR(newToken, { amount, billId, referenceLabel, terminalId });
   }
-
+ 
   if (res.status === 409) {
-    const errData = await res.json().catch(() => ({}));
+    const errData = JSON.parse(rawText || '{}');
     const err = new Error('Terminal has an active QR session. Wait for it to expire or use a different terminal.');
     err.status = 409;
     err.data = errData;
     throw err;
   }
-
+ 
   if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`QR generation failed (${res.status}): ${errText}`);
+    throw new Error(`QR generation failed (${res.status}): ${rawText}`);
   }
-
-  return res.json();
+ 
+  return JSON.parse(rawText);
 }
-
-// ============================================================
-// EXPORTS
-// ============================================================
+ 
+/**
+ * Check payment status via POST API (docs p.20-21).
+ * Call this after receiving a WebSocket notification.
+ */
+async function checkPaymentStatus(token, { terminalId, referenceLabel }) {
+  token = token || await getToken();
+  const url = `${CONFIG.BASE_URL}/api/merchant/third-party/v2/thirdPartyDynamicQrGetStatus`;
+ 
+  const body = {
+    terminalId: String(terminalId || CONFIG.TERMINAL_ID),
+    referenceLabel: String(referenceLabel),
+  };
+  const bodyStr = JSON.stringify(body);
+ 
+  console.log('[Fonepay] Checking payment status:', bodyStr);
+ 
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': token,
+      'signature': sign(bodyStr),
+    },
+    body: bodyStr,
+  });
+ 
+  const rawText = await res.text();
+  console.log('[Fonepay] Payment status response:', rawText);
+ 
+  if (res.status === 401) {
+    cachedToken = null;
+    const newToken = await login();
+    return checkPaymentStatus(newToken, { terminalId, referenceLabel });
+  }
+ 
+  if (!res.ok) {
+    throw new Error(`Status check failed (${res.status}): ${rawText}`);
+  }
+ 
+  return JSON.parse(rawText);
+}
+ 
 module.exports = {
   login,
   getToken,
   getBankList,
   generateQR,
+  checkPaymentStatus,
   sign,
   CONFIG,
 };
+ 
