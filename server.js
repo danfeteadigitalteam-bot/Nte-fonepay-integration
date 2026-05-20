@@ -31,11 +31,14 @@ app.get('/checkout', async (req, res) => {
       return res.status(400).send('Missing required parameters: amount, order_id');
     }
 
+    // Sanitize order_id to guarantee strictly alphanumeric characters (Shopify IDs can contain symbols)
+    const safeOrderId = String(order_id).replace(/[^a-zA-Z0-9]/g, '');
+
     // Generate Fonepay QR
     const qrData = await fonepay.generateQR(null, {
       amount: amount,
-      billId: `ORD${order_id}${Date.now().toString().slice(-4)}`, // Alphanumeric only
-      referenceLabel: `Shopify${order_id}` // Alphanumeric only
+      billId: `ORD${safeOrderId}${Date.now().toString().slice(-4)}`.substring(0, 20),
+      referenceLabel: `Shopify${safeOrderId}`.substring(0, 20)
     });
 
     // Generate the actual QR code image (Base64) to show on the page
