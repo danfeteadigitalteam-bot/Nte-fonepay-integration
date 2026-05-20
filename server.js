@@ -20,6 +20,30 @@ app.use(express.static(path.join(__dirname, 'public')));
 const pendingTransactions = new Map();
 const orderTransactions = new Map();
 const QR_SESSION_TTL_MS = 5 * 60 * 1000;
+const MAX_QR_RETRY_ATTEMPTS = 6;
+const QR_RETRY_DELAY_MS = 5 * 1000;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function generateQrWithRetry(params) {
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= MAX_QR_RETRY_ATTEMPTS; attempt++) {
+    try {
+      return await fonepay.generateQR(null, params);
+    } catch (error) {
+      lastError = error;
+      if (error.status !== 409 || attempt === MAX_QR_RETRY_ATTEMPTS) {
+        throw error;
+      }
+      await sleep(QR_RETRY_DELAY_MS);
+    }
+  }
+
+  throw lastError || new Error('Unable to generate QR');
+}
 
 // ============================================================================
 // 1. INITIATE PAYMENT (Redirect from Shopify)
@@ -27,7 +51,7 @@ const QR_SESSION_TTL_MS = 5 * 60 * 1000;
 app.get('/checkout', async (req, res) => {
   try {
     // Expected parameters from Shopify custom payment redirect
-    const { amount, order_id, redirect_url } = req.query;
+    const { amount, order_id, redirect_url, terminal_id } = req.query;
 
     if (!amount || !order_id) {
       return res.status(400).send('Missing required parameters: amount, order_id');
@@ -61,10 +85,11 @@ app.get('/checkout', async (req, res) => {
     }
 
     // Generate Fonepay QR
-    const qrData = await fonepay.generateQR(null, {
+    const qrData = await generateQrWithRetry({
       amount: amount,
       billId: `ORD${safeOrderId}${Date.now().toString().slice(-4)}`.substring(0, 20),
-      referenceLabel: `Shopify${safeOrderId}`.substring(0, 20)
+      referenceLabel: `Shopify${safeOrderId}`.substring(0, 20),
+      terminalId: terminal_id
     });
 
     // Generate the actual QR code image (Base64) to show on the page
@@ -93,7 +118,12 @@ app.get('/checkout', async (req, res) => {
   } catch (error) {
     console.error('Checkout Error:', error);
     if (error.status === 409) {
-      return res.status(409).send('Terminal is currently busy with another transaction. Please try again in 5 minutes.');
+      const retryUrl = req.originalUrl || '/checkout';
+      return res.status(409).render('terminal-busy', {
+        retryUrl,
+        retryAfterSeconds: 30,
+        orderId: req.query.order_id || 'N/A'
+      });
     }
     res.status(500).send('Error generating payment request: ' + error.message);
   }

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Terminal Busy - Fonepay</title>
+    <style>
+        :root {
+            --primary: #E21B22;
+            --bg: #f9fafb;
+            --card-bg: #ffffff;
+            --text-main: #1f2937;
+            --text-muted: #6b7280;
+        }
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg);
+            color: var(--text-main);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .card {
+            background: var(--card-bg);
+            border-radius: 16px;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.06);
+            width: 100%;
+            max-width: 440px;
+            padding: 30px;
+            text-align: center;
+        }
+        h1 {
+            margin: 0 0 8px 0;
+            color: var(--primary);
+            font-size: 24px;
+        }
+        p {
+            margin: 0 0 12px 0;
+            color: var(--text-muted);
+            line-height: 1.5;
+        }
+        .countdown {
+            margin: 16px 0 18px 0;
+            font-size: 18px;
+            font-weight: 700;
+            color: var(--text-main);
+        }
+        .actions {
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .btn {
+            border: 0;
+            border-radius: 10px;
+            padding: 10px 14px;
+            font-size: 14px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+        .btn-secondary {
+            background: #eef2f7;
+            color: #111827;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Terminal is busy</h1>
+        <p>Another QR transaction is currently active on this Fonepay terminal.</p>
+        <p>Order: <strong><%= orderId %></strong></p>
+        <div class="countdown">
+            Retrying in <span id="seconds"><%= retryAfterSeconds %></span>s...
+        </div>
+        <div class="actions">
+            <a class="btn btn-primary" href="<%= retryUrl %>">Retry now</a>
+            <button class="btn btn-secondary" id="stop-btn" type="button">Stop auto retry</button>
+        </div>
+    </div>
+
+    <script>
+        let remaining = Number('<%= retryAfterSeconds %>') || 30;
+        const retryUrl = '<%= retryUrl %>';
+        const secondsEl = document.getElementById('seconds');
+        const stopBtn = document.getElementById('stop-btn');
+
+        const timer = setInterval(() => {
+            remaining -= 1;
+            secondsEl.textContent = remaining;
+            if (remaining <= 0) {
+                clearInterval(timer);
+                window.location.href = retryUrl;
+            }
+        }, 1000);
+
+        stopBtn.addEventListener('click', function () {
+            clearInterval(timer);
+            stopBtn.disabled = true;
+            stopBtn.textContent = 'Auto retry stopped';
+        });
+    </script>
+</body>
+</html>
