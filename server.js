@@ -18,6 +18,8 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Store pending transactions temporarily in memory (In production, use Redis or DB)
 const pendingTransactions = new Map();
+const orderTransactions = new Map();
+const QR_SESSION_TTL_MS = 5 * 60 * 1000;
 
 // ============================================================================
 // 1. INITIATE PAYMENT (Redirect from Shopify)
@@ -33,6 +35,30 @@ app.get('/checkout', async (req, res) => {
 
     // Sanitize order_id to guarantee strictly alphanumeric characters (Shopify IDs can contain symbols)
     const safeOrderId = String(order_id).replace(/[^a-zA-Z0-9]/g, '');
+    if (!safeOrderId) {
+      return res.status(400).send('Invalid order_id');
+    }
+
+    // Reuse active QR session for the same order to avoid repeated 409 conflicts on refresh/retry.
+    const existingWsId = orderTransactions.get(safeOrderId);
+    if (existingWsId) {
+      const existingTx = pendingTransactions.get(existingWsId);
+      const isActive = existingTx && existingTx.status === 'pending' && Date.now() < existingTx.expiresAt;
+
+      if (isActive) {
+        return res.render('payment', {
+          orderId: order_id,
+          amount: amount,
+          qrImage: existingTx.qrImage,
+          websocketId: existingWsId
+        });
+      }
+
+      orderTransactions.delete(safeOrderId);
+      if (existingTx && existingTx.status !== 'paid') {
+        pendingTransactions.delete(existingWsId);
+      }
+    }
 
     // Generate Fonepay QR
     const qrData = await fonepay.generateQR(null, {
@@ -47,10 +73,14 @@ app.get('/checkout', async (req, res) => {
     // Save transaction info to memory
     pendingTransactions.set(qrData.websocketId, {
       orderId: order_id,
+      safeOrderId,
       amount: amount,
       redirectUrl: redirect_url,
-      status: 'pending'
+      status: 'pending',
+      qrImage: qrImageBase64,
+      expiresAt: Date.now() + QR_SESSION_TTL_MS
     });
+    orderTransactions.set(safeOrderId, qrData.websocketId);
 
     // Render the payment page
     res.render('payment', {
@@ -75,6 +105,11 @@ app.get('/checkout', async (req, res) => {
 app.get('/api/status/:wsId', (req, res) => {
   const tx = pendingTransactions.get(req.params.wsId);
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
+
+  if (tx.status === 'pending' && Date.now() >= tx.expiresAt) {
+    tx.status = 'expired';
+    orderTransactions.delete(tx.safeOrderId);
+  }
   
   res.json({ status: tx.status, redirectUrl: tx.redirectUrl });
 });
@@ -94,6 +129,7 @@ app.post('/webhook/fonepay', async (req, res) => {
 
   if (tx && status === 'SUCCESS') {
     tx.status = 'paid';
+    orderTransactions.delete(tx.safeOrderId);
     
     // TODO: Call Shopify API to mark order as paid
     // await markShopifyOrderPaid(tx.orderId);
