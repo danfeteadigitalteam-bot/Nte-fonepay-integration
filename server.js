@@ -6,6 +6,7 @@ const QRCode = require('qrcode');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+const TERMINAL_ID = process.env.FONEPAY_TERMINAL_ID;
 
 // Set EJS as the view engine for rendering the payment page
 app.set('view engine', 'ejs');
@@ -19,54 +20,32 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Store pending transactions temporarily in memory (In production, use Redis or DB)
 const pendingTransactions = new Map();
 const orderTransactions = new Map();
+const websocketTransactions = new Map();
 const QR_SESSION_TTL_MS = 5 * 60 * 1000;
-const MAX_QR_RETRY_ATTEMPTS = 6;
-const QR_RETRY_DELAY_MS = 5 * 1000;
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function generateQrWithRetry(params) {
-  let lastError = null;
-
-  for (let attempt = 1; attempt <= MAX_QR_RETRY_ATTEMPTS; attempt++) {
-    try {
-      return await fonepay.generateQR(null, params);
-    } catch (error) {
-      lastError = error;
-      if (error.status !== 409 || attempt === MAX_QR_RETRY_ATTEMPTS) {
-        throw error;
-      }
-      await sleep(QR_RETRY_DELAY_MS);
-    }
-  }
-
-  throw lastError || new Error('Unable to generate QR');
-}
 
 // ============================================================================
 // 1. INITIATE PAYMENT (Redirect from Shopify)
 // ============================================================================
 app.get('/checkout', async (req, res) => {
   try {
-    // Expected parameters from Shopify custom payment redirect
-    const { amount, order_id, redirect_url, terminal_id } = req.query;
+    const { amount, order_id, redirect_url } = req.query;
 
     if (!amount || !order_id) {
       return res.status(400).send('Missing required parameters: amount, order_id');
     }
 
-    // Sanitize order_id to guarantee strictly alphanumeric characters (Shopify IDs can contain symbols)
+    if (!TERMINAL_ID) {
+      return res.status(500).send('FONEPAY_TERMINAL_ID is not configured on the server.');
+    }
+
     const safeOrderId = String(order_id).replace(/[^a-zA-Z0-9]/g, '');
     if (!safeOrderId) {
       return res.status(400).send('Invalid order_id');
     }
 
-    // Reuse active QR session for the same order to avoid repeated 409 conflicts on refresh/retry.
-    const existingWsId = orderTransactions.get(safeOrderId);
-    if (existingWsId) {
-      const existingTx = pendingTransactions.get(existingWsId);
+    const existingReferenceLabel = orderTransactions.get(safeOrderId);
+    if (existingReferenceLabel) {
+      const existingTx = pendingTransactions.get(existingReferenceLabel);
       const isActive = existingTx && existingTx.status === 'pending' && Date.now() < existingTx.expiresAt;
 
       if (isActive) {
@@ -74,57 +53,69 @@ app.get('/checkout', async (req, res) => {
           orderId: order_id,
           amount: amount,
           qrImage: existingTx.qrImage,
-          websocketId: existingWsId
+          referenceLabel: existingReferenceLabel
         });
       }
 
       orderTransactions.delete(safeOrderId);
       if (existingTx && existingTx.status !== 'paid') {
-        pendingTransactions.delete(existingWsId);
+        pendingTransactions.delete(existingReferenceLabel);
+        if (existingTx.websocketId) {
+          websocketTransactions.delete(existingTx.websocketId);
+        }
       }
     }
 
-    // Generate Fonepay QR
-    const qrData = await generateQrWithRetry({
-      amount: amount,
-      billId: `ORD${safeOrderId}${Date.now().toString().slice(-4)}`.substring(0, 20),
-      referenceLabel: `Shopify${safeOrderId}`.substring(0, 20),
-      terminalId: terminal_id
+    const unique = Date.now().toString().slice(-6);
+    const referenceLabel = `SHP${safeOrderId}${unique}`.replace(/[^a-zA-Z0-9]/g, '').substring(0, 30);
+
+    const qrData = await fonepay.generateQR(null, {
+      amount: Number(amount),
+      billId: `ORD${safeOrderId}${unique}`.replace(/[^a-zA-Z0-9]/g, '').substring(0, 20),
+      referenceLabel,
+      terminalId: TERMINAL_ID
     });
 
-    // Generate the actual QR code image (Base64) to show on the page
-    const qrImageBase64 = await QRCode.toDataURL(qrData.prn);
+    const qrPayload = qrData.qrString || qrData.qrMessage;
+    if (!qrPayload) {
+      throw new Error('QR payload missing in Fonepay response');
+    }
+    const qrImageBase64 = await QRCode.toDataURL(qrPayload);
 
-    // Save transaction info to memory
-    pendingTransactions.set(qrData.websocketId, {
+    pendingTransactions.set(referenceLabel, {
       orderId: order_id,
       safeOrderId,
+      referenceLabel,
+      websocketId: qrData.websocketId,
       amount: amount,
       redirectUrl: redirect_url,
       status: 'pending',
       qrImage: qrImageBase64,
       expiresAt: Date.now() + QR_SESSION_TTL_MS
     });
-    orderTransactions.set(safeOrderId, qrData.websocketId);
+    orderTransactions.set(safeOrderId, referenceLabel);
+    if (qrData.websocketId) {
+      websocketTransactions.set(qrData.websocketId, referenceLabel);
+    }
 
-    // Render the payment page
     res.render('payment', {
       orderId: order_id,
       amount: amount,
       qrImage: qrImageBase64,
-      websocketId: qrData.websocketId
+      referenceLabel
     });
 
   } catch (error) {
-    console.error('Checkout Error:', error);
     if (error.status === 409) {
+      console.warn('Checkout: terminal busy', { terminal: TERMINAL_ID, orderId: req.query.order_id });
       const retryUrl = req.originalUrl || '/checkout';
-      return res.status(409).render('terminal-busy', {
+      return res.status(200).render('terminal-busy', {
         retryUrl,
         retryAfterSeconds: 30,
         orderId: req.query.order_id || 'N/A'
       });
     }
+    console.error('Checkout Error:', error);
     res.status(500).send('Error generating payment request: ' + error.message);
   }
 });
@@ -132,42 +123,52 @@ app.get('/checkout', async (req, res) => {
 // ============================================================================
 // 2. CHECK PAYMENT STATUS (Polled by the frontend)
 // ============================================================================
-app.get('/api/status/:wsId', (req, res) => {
-  const tx = pendingTransactions.get(req.params.wsId);
+app.get('/api/status/:referenceLabel', (req, res) => {
+  const tx = pendingTransactions.get(req.params.referenceLabel);
   if (!tx) return res.status(404).json({ error: 'Transaction not found' });
 
   if (tx.status === 'pending' && Date.now() >= tx.expiresAt) {
     tx.status = 'expired';
     orderTransactions.delete(tx.safeOrderId);
+    if (tx.websocketId) {
+      websocketTransactions.delete(tx.websocketId);
+    }
   }
-  
+
   res.json({ status: tx.status, redirectUrl: tx.redirectUrl });
 });
 
 // ============================================================================
-// 3. FONEPAY WEBHOOK (Simulated - Requires exact Fonepay webhook endpoint)
+// 3. FONEPAY WEBHOOK
 // ============================================================================
-// NOTE: We need Fonepay's official webhook documentation to format this perfectly.
-// For now, this is a placeholder where Fonepay notifies us of success.
 app.post('/webhook/fonepay', async (req, res) => {
   console.log('🔔 Webhook received from Fonepay:', req.body);
-  
-  // TODO: Verify webhook signature here
 
-  const { websocketId, status } = req.body;
-  const tx = pendingTransactions.get(websocketId);
+  const { websocketId, status, referenceLabel } = req.body;
+  const txRef = referenceLabel || websocketTransactions.get(websocketId);
+  const tx = txRef ? pendingTransactions.get(txRef) : null;
 
   if (tx && status === 'SUCCESS') {
     tx.status = 'paid';
     orderTransactions.delete(tx.safeOrderId);
-    
-    // TODO: Call Shopify API to mark order as paid
-    // await markShopifyOrderPaid(tx.orderId);
+    if (tx.websocketId) {
+      websocketTransactions.delete(tx.websocketId);
+    }
   }
 
   res.send('OK');
 });
 
+app.get('/health', (req, res) => {
+  res.json({
+    ok: true,
+    terminalConfigured: Boolean(TERMINAL_ID),
+    terminalSuffix: TERMINAL_ID ? TERMINAL_ID.slice(-4) : null
+  });
+});
+
 app.listen(PORT, () => {
+  const suffix = TERMINAL_ID ? TERMINAL_ID.slice(-4) : 'none';
   console.log(`🚀 Fonepay Payment Server running at http://localhost:${PORT}`);
+  console.log(`📟 Terminal configured: ${TERMINAL_ID ? 'yes (…' + suffix + ')' : 'MISSING — set FONEPAY_TERMINAL_ID'}`);
 });

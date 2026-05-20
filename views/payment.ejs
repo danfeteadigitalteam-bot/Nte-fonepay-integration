@@ -119,12 +119,12 @@
     </div>
 
     <script>
-        const wsId = '<%= websocketId %>';
+        const referenceLabel = '<%= referenceLabel %>';
         
         // Poll for payment status every 3 seconds
         const pollInterval = setInterval(async () => {
             try {
-                const response = await fetch(`/api/status/${wsId}`);
+                const response = await fetch(`/api/status/${encodeURIComponent(referenceLabel)}`);
                 const data = await response.json();
                 
                 if (data.status === 'paid') {
