@@ -45,14 +45,20 @@ app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 
 app.use(helmet({
+  // Shopify embeds the app in admin iframe; frameguard SAMEORIGIN would block that
+  frameguard: false,
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", 'data:'],
       connectSrc: ["'self'"],
-      frameAncestors: ["'none'"],
+      frameAncestors: [
+        "'self'",
+        'https://admin.shopify.com',
+        'https://*.myshopify.com',
+      ],
     },
   },
 }));

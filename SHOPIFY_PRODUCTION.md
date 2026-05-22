@@ -125,7 +125,7 @@ Choose one approach:
 | Removed `/api/notify` (fake “paid” posts) | Removed |
 | Payment confirmed only via Fonepay API + WebSocket + webhook | Yes |
 | Rate limit on `/checkout` | Yes |
-| Helmet security headers + CSP | Yes |
+| Helmet security headers + CSP (allows Shopify admin iframe) | Yes |
 | CORS restricted to store domain | When `SHOPIFY_STORE_DOMAIN` set |
 | Webhook HMAC (optional `FONEPAY_WEBHOOK_SECRET`) | Yes |
 | Secrets only in Render env (`FONEPAY_PRIVATE_KEY_B64`) | Documented |
@@ -172,6 +172,16 @@ sequenceDiagram
 4. Open URL → scan QR → confirm payment page shows success
 5. In Shopify Admin → order is **Paid**
 6. Check Render logs for `Shopify order marked paid`
+
+---
+
+## Shopify app embed settings
+
+If the app opens inside Shopify Admin and shows **refused to connect**:
+
+1. Ensure latest `server.js` is deployed (CSP `frameAncestors` includes `admin.shopify.com` and `*.myshopify.com`).
+2. In the custom app / Partner settings, try **Embedded app = false** if you only need the API token (no UI inside Admin).
+3. Confirm `https://nte-fonepay-integration.onrender.com/health` works in a normal browser tab first.
 
 ---
 
