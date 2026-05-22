@@ -253,11 +253,25 @@ function validatePayRequest(req) {
   const { amount, redirect_url } = req.query;
   const orderIdRaw = req.query.order_id ?? req.query.orderId ?? req.query.order ?? req.query.id;
 
-  if (!orderIdRaw) {
+  let derivedOrderId = orderIdRaw;
+
+  // Some Shopify thank-you/order-status blocks don't expose order.id but do expose an order status URL.
+  // In that case, derive the numeric order id from URLs like: https://{shop}/account/orders/1234567890
+  if (!derivedOrderId && redirect_url) {
+    try {
+      const parsed = new URL(String(redirect_url));
+      const match = parsed.pathname.match(/\/orders\/(\d+)(?:\/|$)/i);
+      if (match?.[1]) derivedOrderId = match[1];
+    } catch {
+      // ignore, handled below
+    }
+  }
+
+  if (!derivedOrderId) {
     return { error: 'Missing required parameter: order_id', status: 400 };
   }
 
-  const safeOrderId = security.sanitizeOrderId(orderIdRaw);
+  const safeOrderId = security.sanitizeOrderId(derivedOrderId);
   if (!safeOrderId) {
     return { error: 'Invalid order_id', status: 400 };
   }
