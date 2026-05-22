@@ -250,13 +250,14 @@ function validateCheckoutRequest(req) {
 }
 
 function validatePayRequest(req) {
-  const { amount, order_id, redirect_url } = req.query;
+  const { amount, redirect_url } = req.query;
+  const orderIdRaw = req.query.order_id ?? req.query.orderId ?? req.query.order ?? req.query.id;
 
-  if (!order_id) {
+  if (!orderIdRaw) {
     return { error: 'Missing required parameter: order_id', status: 400 };
   }
 
-  const safeOrderId = security.sanitizeOrderId(order_id);
+  const safeOrderId = security.sanitizeOrderId(orderIdRaw);
   if (!safeOrderId) {
     return { error: 'Invalid order_id', status: 400 };
   }
