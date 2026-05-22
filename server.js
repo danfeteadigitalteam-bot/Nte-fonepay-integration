@@ -18,6 +18,7 @@ const TERMINAL_ID = process.env.FONEPAY_TERMINAL_ID;
 const CHECKOUT_SECRET = process.env.CHECKOUT_HMAC_SECRET;
 const WEBHOOK_SECRET = process.env.FONEPAY_WEBHOOK_SECRET;
 const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+const ALLOW_PAY_AMOUNT_FROM_QUERY = process.env.ALLOW_PAY_AMOUNT_FROM_QUERY === 'true';
 
 const ALLOWED_REDIRECT_HOSTS = (process.env.ALLOWED_REDIRECT_HOSTS || '')
   .split(',')
@@ -84,6 +85,14 @@ const checkoutLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many checkout attempts. Try again later.' },
+});
+
+const payLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: IS_PROD ? 60 : 300,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many payment link attempts. Try again later.' },
 });
 
 const pendingTransactions = new Map();
@@ -239,6 +248,114 @@ function validateCheckoutRequest(req) {
     redirectUrl,
   };
 }
+
+function validatePayRequest(req) {
+  const { amount, order_id, redirect_url } = req.query;
+
+  if (!order_id) {
+    return { error: 'Missing required parameter: order_id', status: 400 };
+  }
+
+  const safeOrderId = security.sanitizeOrderId(order_id);
+  if (!safeOrderId) {
+    return { error: 'Invalid order_id', status: 400 };
+  }
+
+  // Amount is optional here; in production we should fetch it from Shopify (when configured).
+  let amountNum = null;
+  if (amount != null && String(amount).trim() !== '') {
+    amountNum = security.parseAmount(amount);
+    if (amountNum === null) {
+      return { error: 'Invalid amount', status: 400 };
+    }
+  }
+
+  let redirectUrl = null;
+  if (redirect_url) {
+    if (!security.isAllowedRedirectUrl(redirect_url, ALLOWED_REDIRECT_HOSTS)) {
+      return { error: 'Invalid redirect_url', status: 400 };
+    }
+    redirectUrl = redirect_url;
+  }
+
+  const shopifyOrderId = /^\d+$/.test(String(safeOrderId))
+    ? String(safeOrderId)
+    : null;
+
+  return {
+    safeOrderId,
+    shopifyOrderId,
+    redirectUrl,
+    amount: amountNum,
+  };
+}
+
+function buildSignedCheckoutRedirectUrl({ amount, safeOrderId, redirectUrl }) {
+  const ts = Date.now().toString();
+  const amountFormatted = security.formatAmount(amount);
+  const signature = security.signCheckoutSignature(
+    { timestamp: ts, orderId: safeOrderId, amount: amountFormatted },
+    CHECKOUT_SECRET
+  );
+
+  const query = new URLSearchParams({
+    amount: amountFormatted,
+    order_id: safeOrderId,
+    timestamp: ts,
+    signature,
+  });
+  if (redirectUrl) query.set('redirect_url', redirectUrl);
+  return `/checkout?${query.toString()}`;
+}
+
+/**
+ * Shopify Thank You / Order Status page can only pass basic params (amount, order_id, redirect_url).
+ * This route generates a short-lived signed URL and redirects into the existing /checkout flow.
+ */
+app.get('/pay', payLimiter, (req, res) => {
+  if (!CHECKOUT_SECRET) {
+    return res.status(500).send('Checkout signing is not configured.');
+  }
+
+  const validated = validatePayRequest(req);
+  if (validated.error) {
+    return res.status(validated.status).send(validated.error);
+  }
+
+  const proceedWithAmount = (amountToUse) => res.redirect(302, buildSignedCheckoutRedirectUrl({
+    amount: amountToUse,
+    safeOrderId: validated.safeOrderId,
+    redirectUrl: validated.redirectUrl,
+  }));
+
+  // Secure mode: derive amount from Shopify Admin API (prevents underpayment by tampering with URL).
+  if (shopify.isConfigured()) {
+    return shopify.getOrderTotal(validated.safeOrderId)
+      .then(({ amount, currencyCode }) => {
+        if (currencyCode && String(currencyCode).toUpperCase() !== 'NPR') {
+          return res.status(400).send(`Order currency must be NPR (got ${currencyCode}).`);
+        }
+        return proceedWithAmount(amount);
+      })
+      .catch((err) => {
+        console.error('Shopify getOrderTotal failed:', validated.safeOrderId, err.message);
+        return res.status(502).send('Unable to fetch order total. Please try again later.');
+      });
+  }
+
+  // Fallback (MVP only): allow amount from query if explicitly permitted (or in dev).
+  if (!IS_PROD || ALLOW_PAY_AMOUNT_FROM_QUERY) {
+    if (validated.amount == null) {
+      return res.status(400).send('Missing required parameter: amount');
+    }
+    return proceedWithAmount(validated.amount);
+  }
+
+  return res.status(501).send(
+    'Secure /pay requires Shopify Admin API to fetch the real order total. ' +
+    'Set SHOPIFY_STORE_DOMAIN and SHOPIFY_ADMIN_ACCESS_TOKEN, or use a pre-signed /checkout link.'
+  );
+});
 
 app.get('/checkout', checkoutLimiter, async (req, res) => {
   try {

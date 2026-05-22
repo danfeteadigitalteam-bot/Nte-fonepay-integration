@@ -50,6 +50,18 @@ sequenceDiagram
 
 Use the **numeric Shopify order ID** in the payment link (`{{ order.id }}` in notifications — not `#1001`).
 
+### Shopify Thank You / Order Status page (recommended)
+
+Shopify Checkout / Order Status blocks can only send basic parameters (no signature). For security, **do not trust `amount` from the URL**. Use `/pay?order_id=...` and let the server fetch the real order total from Shopify Admin API, then create a short-lived signed `/checkout` URL internally:
+
+```text
+https://nte-fonepay-integration.onrender.com/pay
+  ?order_id={SHOPIFY_ORDER_ID}
+  &redirect_url={OPTIONAL_HTTPS_RETURN_URL}
+```
+
+If Shopify Admin API is not configured yet, use a **pre-signed** `/checkout` link (below) or (MVP only) enable `ALLOW_PAY_AMOUNT_FROM_QUERY=true` and pass `amount` â€” this is not recommended for production because customers can tamper with the amount.
+
 ### Signed checkout URL
 
 ```text
