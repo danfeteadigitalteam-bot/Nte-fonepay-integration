@@ -129,13 +129,19 @@
                 const response = await fetch(`/api/status/${encodeURIComponent(referenceLabel)}`);
                 const data = await response.json();
                 
-                if (data.status === 'paid') {
+                if (data.status === 'expired') {
+                    clearInterval(pollInterval);
+                    document.getElementById('payment-status').innerHTML = 'QR expired. Please return to the store and try again.';
+                    document.getElementById('payment-status').style.color = '#b45309';
+                } else if (data.status === 'paid') {
                     clearInterval(pollInterval);
                     document.getElementById('payment-status').innerHTML = '✅ Payment Successful! Redirecting...';
                     document.getElementById('payment-status').style.color = '#10b981';
                     
                     setTimeout(() => {
-                        window.location.href = data.redirectUrl || 'https://nepal-tea-exchange.myshopify.com';
+                        if (data.redirectUrl) {
+                            window.location.href = data.redirectUrl;
+                        }
                     }, 2000);
                 }
             } catch (err) {

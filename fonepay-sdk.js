@@ -90,8 +90,9 @@ async function login() {
   const body = { username: CONFIG.USERNAME, password: CONFIG.PASSWORD };
   const bodyStr = JSON.stringify(body);
  
-  console.log('[Fonepay] Logging in...');
- 
+  const log = process.env.NODE_ENV !== 'production';
+  if (log) console.log('[Fonepay] Logging in...');
+
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -103,10 +104,10 @@ async function login() {
   });
  
   const rawText = await res.text();
-  console.log('[Fonepay] Login response:', rawText);
- 
+  if (log) console.log('[Fonepay] Login response:', rawText.slice(0, 200));
+
   if (!res.ok) {
-    throw new Error(`Login failed (${res.status}): ${rawText}`);
+    throw new Error(`Login failed (${res.status}): ${rawText.slice(0, 300)}`);
   }
  
   const data = JSON.parse(rawText);
@@ -181,7 +182,8 @@ async function generateQR(token, { amount, billId, referenceLabel, terminalId })
 
   const bodyStr = JSON.stringify(body);
 
-  console.log('[Fonepay] Generating QR with body:', bodyStr);
+  const log = process.env.NODE_ENV !== 'production';
+  if (log) console.log('[Fonepay] Generating QR:', referenceLabel, amountNum);
 
   const res = await fetch(url, {
     method: 'POST',
@@ -195,7 +197,7 @@ async function generateQR(token, { amount, billId, referenceLabel, terminalId })
  
   // Log the raw response for debugging
   const rawText = await res.text();
-  console.log('[Fonepay] QR generation raw response:', rawText);
+  if (log) console.log('[Fonepay] QR response:', rawText.slice(0, 200));
  
   if (res.status === 401) {
     cachedToken = null;
@@ -232,8 +234,8 @@ async function checkPaymentStatus(token, { terminalId, referenceLabel }) {
   };
   const bodyStr = JSON.stringify(body);
  
-  console.log('[Fonepay] Checking payment status:', bodyStr);
- 
+  const log = process.env.NODE_ENV !== 'production';
+
   const res = await fetch(url, {
     method: 'POST',
     headers: {
@@ -245,7 +247,7 @@ async function checkPaymentStatus(token, { terminalId, referenceLabel }) {
   });
  
   const rawText = await res.text();
-  console.log('[Fonepay] Payment status response:', rawText);
+  if (log) console.log('[Fonepay] Payment status:', rawText.slice(0, 200));
  
   if (res.status === 401) {
     cachedToken = null;

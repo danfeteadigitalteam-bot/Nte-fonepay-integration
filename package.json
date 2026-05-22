@@ -5,6 +5,8 @@
     "dotenv": "^17.4.2",
     "ejs": "^5.0.2",
     "express": "^5.2.1",
+    "express-rate-limit": "^7.5.1",
+    "helmet": "^8.2.0",
     "node-fetch": "^2.7.0",
     "node-forge": "^1.4.0",
     "qrcode": "^1.5.4",
@@ -16,7 +18,11 @@
   "main": "test.js",
   "scripts": {
     "start": "node server.js",
+    "sign-url": "node scripts/sign-checkout-url.js",
     "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [],
   "author": "",

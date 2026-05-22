@@ -1,0 +1,24 @@
+{% comment %}
+  Nepal Tea Exchange — Fonepay payment link (order status page)
+
+  1. In Shopify Admin → Settings → Custom data → create a metafield OR
+     use Shopify Flow / your app to pass signed URLs (recommended: server signs URLs).
+
+  2. For theme-only setup, use the checkout redirect from your payment instructions
+     email template with a URL built by scripts/sign-checkout-url.js or your backend.
+
+  This snippet is a placeholder: signing must happen server-side (CHECKOUT_HMAC_SECRET).
+  Do NOT put the HMAC secret in the theme.
+{% endcomment %}
+
+{% if order.financial_status == 'pending' %}
+  <div class="fonepay-pay-block" style="margin:1.5rem 0;padding:1rem;border:1px solid #e5e7eb;border-radius:8px;">
+    <h3>Pay with Fonepay</h3>
+    <p>Complete your payment by scanning the QR code.</p>
+    <p>
+      <a class="button" href="{{ shop.url }}">
+        Return to store — payment link is sent by email or provided at checkout
+      </a>
+    </p>
+  </div>
+{% endif %}
