@@ -250,25 +250,40 @@ function validateCheckoutRequest(req) {
 }
 
 function validatePayRequest(req) {
-  const { amount, redirect_url } = req.query;
+  const { amount } = req.query;
+  const redirectRaw = req.query.redirect_url ?? req.query.redirectUrl ?? req.query.return_url ?? req.query.returnUrl;
   const orderIdRaw = req.query.order_id ?? req.query.orderId ?? req.query.order ?? req.query.id;
 
   let derivedOrderId = orderIdRaw;
 
   // Some Shopify thank-you/order-status blocks don't expose order.id but do expose an order status URL.
   // In that case, derive the numeric order id from URLs like: https://{shop}/account/orders/1234567890
-  if (!derivedOrderId && redirect_url) {
+  const candidateUrls = [];
+  if (redirectRaw) candidateUrls.push(String(redirectRaw));
+  const referer = req.get('referer');
+  if (referer) candidateUrls.push(String(referer));
+
+  if (!derivedOrderId && candidateUrls.length) {
     try {
-      const parsed = new URL(String(redirect_url));
-      const match = parsed.pathname.match(/\/orders\/(\d+)(?:\/|$)/i);
-      if (match?.[1]) derivedOrderId = match[1];
+      for (const candidate of candidateUrls) {
+        const parsed = new URL(candidate);
+        if (!security.isAllowedRedirectUrl(candidate, ALLOWED_REDIRECT_HOSTS)) continue;
+        const match = parsed.pathname.match(/\/orders\/(\d+)(?:\/|$)/i);
+        if (match?.[1]) {
+          derivedOrderId = match[1];
+          break;
+        }
+      }
     } catch {
       // ignore, handled below
     }
   }
 
   if (!derivedOrderId) {
-    return { error: 'Missing required parameter: order_id', status: 400 };
+    return {
+      error: 'Missing required parameter: order_id (or provide a valid redirect_url so the server can derive it)',
+      status: 400,
+    };
   }
 
   const safeOrderId = security.sanitizeOrderId(derivedOrderId);
@@ -286,11 +301,11 @@ function validatePayRequest(req) {
   }
 
   let redirectUrl = null;
-  if (redirect_url) {
-    if (!security.isAllowedRedirectUrl(redirect_url, ALLOWED_REDIRECT_HOSTS)) {
+  if (redirectRaw) {
+    if (!security.isAllowedRedirectUrl(redirectRaw, ALLOWED_REDIRECT_HOSTS)) {
       return { error: 'Invalid redirect_url', status: 400 };
     }
-    redirectUrl = redirect_url;
+    redirectUrl = String(redirectRaw);
   }
 
   const shopifyOrderId = /^\d+$/.test(String(safeOrderId))
