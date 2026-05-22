@@ -116,35 +116,60 @@ async function fulfillShopifyOrder(tx) {
   }
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isFonepayStatusSuccess(result) {
+  return (
+    String(result?.paymentStatus || result?.status || '').toUpperCase() === 'SUCCESS' ||
+    result?.success === true
+  );
+}
+
 function markTransactionPaid(tx, source) {
   if (!tx || tx.status === 'paid') return;
   tx.status = 'paid';
+  tx.fonepayVerified = true;
+  tx.fonepayVerifiedAt = new Date().toISOString();
   orderTransactions.delete(tx.safeOrderId);
   if (tx.websocketId) {
     fonepayWs.stopMonitoring(tx.referenceLabel);
     websocketTransactions.delete(tx.websocketId);
   }
-  console.log(`Payment confirmed (${source}):`, tx.referenceLabel, 'order', tx.orderId);
+  console.log(
+    `[PAID] Fonepay verified (${source}) | PRN/ref: ${tx.referenceLabel} | Shopify order: ${tx.orderId} | amount NPR ${tx.amount}` +
+    (shopify.isConfigured() ? '' : ' | → Mark this order PAID manually in Shopify Admin')
+  );
   fulfillShopifyOrder(tx).catch(() => {});
 }
 
-async function confirmPaymentWithApi(tx) {
-  try {
-    const result = await fonepay.checkPaymentStatus(null, {
-      terminalId: TERMINAL_ID,
-      referenceLabel: tx.referenceLabel,
-    });
-    const paid =
-      String(result.paymentStatus || result.status || '').toUpperCase() === 'SUCCESS' ||
-      result.success === true;
-    if (paid) {
-      markTransactionPaid(tx, 'api');
+/**
+ * Confirm payment via Fonepay thirdPartyDynamicQrGetStatus only.
+ * WebSocket/webhook are hints — status is marked paid only after API SUCCESS.
+ */
+async function confirmPaymentWithApi(tx, { retries = 5, delayMs = 2000 } = {}) {
+  if (!tx || tx.status === 'paid') return true;
+
+  for (let attempt = 1; attempt <= retries; attempt += 1) {
+    try {
+      const result = await fonepay.checkPaymentStatus(null, {
+        terminalId: TERMINAL_ID,
+        referenceLabel: tx.referenceLabel,
+      });
+      if (isFonepayStatusSuccess(result)) {
+        markTransactionPaid(tx, 'fonepay-api');
+        return true;
+      }
+      if (attempt < retries) {
+        await sleep(delayMs);
+      }
+    } catch (err) {
+      console.error(`Status check failed (attempt ${attempt}/${retries}):`, tx.referenceLabel, err.message);
+      if (attempt < retries) await sleep(delayMs);
     }
-    return paid;
-  } catch (err) {
-    console.error('Status check failed:', tx.referenceLabel, err.message);
-    return false;
   }
+  return false;
 }
 
 async function attachWebSocketMonitor(tx) {
@@ -158,7 +183,7 @@ async function attachWebSocketMonitor(tx) {
       }
     },
     onPaymentSuccess: async () => {
-      markTransactionPaid(tx, 'websocket');
+      console.log('WebSocket payment signal — verifying with Fonepay status API:', tx.referenceLabel);
       await confirmPaymentWithApi(tx);
     },
     onError: (err) => {
@@ -333,8 +358,16 @@ app.get('/api/status/:referenceLabel', rateLimit({
     }
   }
 
-  const body = { status: tx.status };
+  const body = {
+    status: tx.status,
+    orderId: tx.orderId,
+    referenceLabel: tx.referenceLabel,
+    amount: security.formatAmount(tx.amount),
+  };
   if (tx.status === 'paid') {
+    body.fonepayVerified = true;
+    body.prn = tx.prn;
+    body.shopifyManualRequired = !shopify.isConfigured();
     body.redirectUrl = resolveRedirectUrl(tx);
   }
   res.json(body);
@@ -365,8 +398,9 @@ app.post('/webhook/fonepay', async (req, res) => {
   const tx = txRef ? pendingTransactions.get(txRef) : null;
 
   if (tx && status === 'SUCCESS') {
-    markTransactionPaid(tx, 'webhook');
-    confirmPaymentWithApi(tx).catch(() => {});
+    confirmPaymentWithApi(tx).catch((err) => {
+      console.error('Webhook status verification failed:', tx.referenceLabel, err.message);
+    });
   }
 
   res.send('OK');
@@ -393,6 +427,7 @@ app.get('/health', (req, res) => {
     terminalSuffix: TERMINAL_ID ? TERMINAL_ID.slice(-4) : null,
     checkoutSigning: Boolean(CHECKOUT_SECRET),
     shopifyConfigured: shopify.isConfigured(),
+    shopifyMarkPaidMode: shopify.isConfigured() ? 'automatic' : 'manual',
     activeWebSockets: fonepayWs.getActiveCount(),
   });
 });

@@ -90,7 +90,22 @@
             display: flex;
             align-items: center;
             justify-content: center;
+            flex-wrap: wrap;
+            gap: 8px;
         }
+        .success-box {
+            display: none;
+            text-align: left;
+            background: #ecfdf5;
+            border: 1px solid #a7f3d0;
+            border-radius: 10px;
+            padding: 16px;
+            margin-top: 8px;
+            font-size: 14px;
+            color: #065f46;
+        }
+        .success-box strong { display: block; margin-bottom: 8px; font-size: 16px; }
+        .success-box a { color: #047857; }
     </style>
 </head>
 <body>
@@ -117,6 +132,11 @@
         <div class="status" id="payment-status">
             <span class="loader"></span> Waiting for payment...
         </div>
+        <div class="success-box" id="success-box">
+            <strong>Payment confirmed</strong>
+            <p style="margin:0 0 8px">Your Fonepay payment was verified. Thank you!</p>
+            <p style="margin:0;font-size:13px;color:#047857">Reference: <span id="success-ref"></span></p>
+        </div>
     </div>
 
     <script>
@@ -135,14 +155,17 @@
                     document.getElementById('payment-status').style.color = '#b45309';
                 } else if (data.status === 'paid') {
                     clearInterval(pollInterval);
-                    document.getElementById('payment-status').innerHTML = '✅ Payment Successful! Redirecting...';
+                    document.querySelector('.qr-container').style.opacity = '0.4';
+                    document.getElementById('payment-status').innerHTML = '✅ Payment verified';
                     document.getElementById('payment-status').style.color = '#10b981';
-                    
+                    document.getElementById('success-box').style.display = 'block';
+                    document.getElementById('success-ref').textContent = data.referenceLabel || referenceLabel;
+
                     setTimeout(() => {
                         if (data.redirectUrl) {
                             window.location.href = data.redirectUrl;
                         }
-                    }, 2000);
+                    }, 5000);
                 }
             } catch (err) {
                 console.error('Error checking status:', err);
