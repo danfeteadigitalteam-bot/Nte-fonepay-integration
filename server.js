@@ -81,7 +81,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Startup initialization tracking
 let appReady = false;
-const APP_STARTUP_TIMEOUT_MS = 5000; // Grace period for app to initialize
+const APP_STARTUP_TIMEOUT_MS = 500; // Grace period for app to initialize (reduced from 5000)
 
 // Middleware to serve loading page during startup
 app.use((req, res, next) => {
