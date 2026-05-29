@@ -607,16 +607,15 @@ app.listen(PORT, () => {
   const suffix = TERMINAL_ID ? TERMINAL_ID.slice(-4) : 'none';
   console.log(`Fonepay server listening on port ${PORT} (${IS_PROD ? 'production' : 'development'})`);
   console.log(`Terminal: ${TERMINAL_ID ? 'configured …' + suffix : 'MISSING'}`);
+  console.log(`Checkout HMAC: ${CHECKOUT_SECRET ? 'enabled' : IS_PROD ? 'MISSING' : 'optional (dev)'}`);
+  console.log(`Shopify mark-paid: ${shopify.isConfigured() ? 'enabled' : 'not configured'}`);
+  if (PUBLIC_BASE_URL) {
+    console.log(`Public URL: ${PUBLIC_BASE_URL}`);
+  }
   
   // Set app as ready after a brief initialization period
   setTimeout(() => {
     appReady = true;
     console.log('✓ Server fully initialized — custom loading page deactivated');
   }, APP_STARTUP_TIMEOUT_MS);
-});
-  console.log(`Checkout HMAC: ${CHECKOUT_SECRET ? 'enabled' : IS_PROD ? 'MISSING' : 'optional (dev)'}`);
-  console.log(`Shopify mark-paid: ${shopify.isConfigured() ? 'enabled' : 'not configured'}`);
-  if (PUBLIC_BASE_URL) {
-    console.log(`Public URL: ${PUBLIC_BASE_URL}`);
-  }
 });
