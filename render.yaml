@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: fonepay
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    
+    # Health check to determine when service is ready
+    healthCheckPath: /health
+    healthCheckInterval: 10
+    
+    # Environment variables (configure in Render dashboard)
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -79,6 +79,25 @@ app.use(express.json({ limit: '32kb' }));
 app.use(express.urlencoded({ extended: true, limit: '32kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
+// Startup initialization tracking
+let appReady = false;
+const APP_STARTUP_TIMEOUT_MS = 5000; // Grace period for app to initialize
+
+// Middleware to serve loading page during startup
+app.use((req, res, next) => {
+  // Skip loading page for health check and static files
+  if (req.path === '/health' || req.path.startsWith('/public/')) {
+    return next();
+  }
+  
+  if (!appReady) {
+    // Serve the custom loading page instead of letting Render's booting page show
+    return res.sendFile(path.join(__dirname, 'public', 'loading.html'));
+  }
+  
+  next();
+});
+
 const checkoutLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: IS_PROD ? 40 : 200,
@@ -588,6 +607,13 @@ app.listen(PORT, () => {
   const suffix = TERMINAL_ID ? TERMINAL_ID.slice(-4) : 'none';
   console.log(`Fonepay server listening on port ${PORT} (${IS_PROD ? 'production' : 'development'})`);
   console.log(`Terminal: ${TERMINAL_ID ? 'configured …' + suffix : 'MISSING'}`);
+  
+  // Set app as ready after a brief initialization period
+  setTimeout(() => {
+    appReady = true;
+    console.log('✓ Server fully initialized — custom loading page deactivated');
+  }, APP_STARTUP_TIMEOUT_MS);
+});
   console.log(`Checkout HMAC: ${CHECKOUT_SECRET ? 'enabled' : IS_PROD ? 'MISSING' : 'optional (dev)'}`);
   console.log(`Shopify mark-paid: ${shopify.isConfigured() ? 'enabled' : 'not configured'}`);
   if (PUBLIC_BASE_URL) {
