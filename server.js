@@ -81,7 +81,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 // Startup initialization tracking
 let appReady = false;
-const APP_STARTUP_TIMEOUT_MS = 500; // Grace period for app to initialize (reduced from 5000)
+const APP_STARTUP_TIMEOUT_MS = 5000; // Grace period for app to initialize and show custom loading page
 
 // Middleware to serve loading page during startup
 app.use((req, res, next) => {
@@ -573,6 +573,10 @@ app.post('/webhook/fonepay', async (req, res) => {
 });
 
 app.get('/', (req, res) => {
+  if (!appReady) {
+    return res.sendFile(path.join(__dirname, 'public', 'loading.html'));
+  }
+
   res.type('html').send(`<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
